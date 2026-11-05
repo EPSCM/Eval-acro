@@ -1185,7 +1185,9 @@
           </div>
           <p id="teacher-msg" class="text-xs font-bold text-slate-500">Place le QR code de l'élève devant la caméra.</p>
         </div>
+        <div id="teacher-list" class="mt-4"></div>
         <canvas id="teacher-canvas" class="hidden"></canvas>`;
+      teacherRenderList();
     }
     async function teacherStartCamera() {
       const msg = document.getElementById('teacher-msg');
@@ -1241,6 +1243,7 @@
       try { data = JSON.parse(text); } catch (e) { return teacherBad(); }
       if (!data || data.v !== 1 || !Array.isArray(data.o) || !Array.isArray(data.s)) return teacherBad();
       teacherStopCamera();
+      tDup = !teacherAddScan(text, data);
       teacherShowResult(data);
       return true;
     }
@@ -1278,6 +1281,7 @@
               <p class="text-[11px] text-slate-500">${data.d ? evalEsc(data.d) : ''}</p></div>
             <div class="text-right"><p class="text-[10px] font-bold text-slate-500 uppercase">Score total</p><p class="text-2xl font-black text-emerald-700 leading-none">${total.toFixed(1)}</p></div>
           </div>
+          ${tDup ? '<p class="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-2">Cette fiche avait déjà été scannée : elle n\'est pas ajoutée en double.</p>' : ''}
           <div class="flex flex-wrap gap-2 text-[11px] font-black">
             <span class="px-2.5 py-1 rounded-full bg-violet-100 text-violet-800 border border-violet-400">🔒 Figure bloquée</span>
             <span class="px-2.5 py-1 rounded-full bg-sky-100 text-sky-800 border border-sky-400">🎲 Figure tirée au sort</span>
@@ -1285,9 +1289,115 @@
           <div class="space-y-2 max-h-[55vh] overflow-y-auto pr-1">${rows}</div>
           <div class="flex gap-2">
             <button onclick="teacherScanStep()" class="bg-indigo-600 hover:bg-indigo-700 text-white font-black text-sm px-4 py-2 rounded-xl">📷 Scanner une autre fiche</button>
+            <button onclick="teacherExportPDF()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm px-4 py-2 rounded-xl">📄 Tout exporter (${teacherScans.length})</button>
             <button onclick="teacherClose()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-black text-sm px-4 py-2 rounded-xl">Fermer</button>
           </div>
         </div>`;
+    }
+  </script>
+
+  <script>
+    // ===== ESPACE ENSEIGNANT : fiches scannées + export global =====
+    let teacherScans = [], tDup = false;
+    try { teacherScans = JSON.parse(localStorage.getItem('acrosport_scans') || '[]'); if (!Array.isArray(teacherScans)) teacherScans = []; } catch (e) { teacherScans = []; }
+    function teacherSave() { try { localStorage.setItem('acrosport_scans', JSON.stringify(teacherScans)); } catch (e) {} }
+
+    function teacherAddScan(raw, data) {
+      if (teacherScans.some(s => s.raw === raw)) return false;
+      teacherScans.push({ raw: raw, data: data, ts: Date.now() });
+      teacherSave();
+      return true;
+    }
+    function teacherFig(id) { return FIGURES_DB.find(f => f.id === id); }
+    function teacherScore(data) { return data.o.reduce((s, e) => { const f = teacherFig(e[0]); return s + (f ? evalPts(f.level) : 0); }, 0); }
+
+    function teacherRenderList() {
+      const box = document.getElementById('teacher-list');
+      if (!box) return;
+      if (!teacherScans.length) { box.innerHTML = '<p class="text-xs text-slate-400 font-bold text-center border-2 border-dashed border-slate-200 rounded-2xl p-4">Aucune fiche scannée pour le moment.</p>'; return; }
+      box.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h4 class="text-sm font-black text-slate-900">📚 Fiches scannées (${teacherScans.length})</h4>
+          <div class="flex flex-wrap gap-2">
+            <button onclick="teacherExportPDF()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 py-1.5 rounded-lg">📄 Tout exporter (PDF)</button>
+            <button onclick="teacherExportCSV()" class="bg-sky-600 hover:bg-sky-700 text-white font-black text-xs px-3 py-1.5 rounded-lg">📊 Export Excel (CSV)</button>
+            <button onclick="teacherClearScans()" class="bg-slate-100 hover:bg-rose-100 text-slate-700 font-black text-xs px-3 py-1.5 rounded-lg">🗑️ Vider</button>
+          </div></div>
+        <div class="space-y-1.5 max-h-48 overflow-y-auto pr-1">` + teacherScans.map((s, i) => `
+          <div class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+            <span class="w-6 h-6 shrink-0 rounded-full bg-indigo-600 text-white text-[11px] font-black flex items-center justify-center">${i + 1}</span>
+            <div class="min-w-0 flex-1"><p class="text-xs font-black text-slate-900 truncate">${s.data.s.map(evalEsc).join(', ')}</p>
+              <p class="text-[10px] text-slate-500">${evalEsc(s.data.d || '')} · ${s.data.o.length} figures · ${teacherScore(s.data).toFixed(1)} pt</p></div>
+            <button onclick="teacherViewScan(${i})" class="text-xs font-black px-2 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-100">👁️</button>
+            <button onclick="teacherDeleteScan(${i})" class="text-xs font-black px-2 py-1 rounded-lg bg-white border border-slate-200 hover:bg-rose-100">✕</button>
+          </div>`).join('') + '</div>';
+    }
+    function teacherViewScan(i) { tDup = false; teacherShowResult(teacherScans[i].data); }
+    function teacherDeleteScan(i) { teacherScans.splice(i, 1); teacherSave(); teacherRenderList(); }
+    function teacherClearScans() {
+      if (!teacherScans.length || !confirm('Supprimer toutes les fiches scannées ?')) return;
+      teacherScans = []; teacherSave(); teacherRenderList();
+    }
+
+    function teacherFicheHTML(data, idx, last) {
+      const lvl = { 1: '#d1fae5', 2: '#fef3c7', 3: '#ffe4e6' };
+      const rows = data.o.map((e, i) => {
+        const f = teacherFig(e[0]), L = e[1] === 'L', lv = f ? f.level : 0;
+        const roles = data.s.map((n, k) => `${evalEsc(n)} : ${evalEsc(EVAL_CODE_ROLE[(e[2] || '')[k]] || '—')}`).join(' · ');
+        return `<tr style="background:${L ? '#ede9fe' : '#e0f2fe'};">
+          <td style="border:1px solid #cbd5e1;padding:4px;text-align:center;font-weight:900;font-size:16px;width:36px;">${i + 1}</td>
+          <td style="border:1px solid #cbd5e1;padding:3px;width:80px;text-align:center;background:#fff;">${f ? `<img src="${f.img}" style="max-width:74px;max-height:56px;object-fit:contain;">` : '?'}</td>
+          <td style="border:1px solid #cbd5e1;padding:4px;font-size:11px;"><b>${f ? evalEsc(f.name) : evalEsc(e[0])}</b><br><span style="color:#475569;font-size:9px;">${roles}</span></td>
+          <td style="border:1px solid #cbd5e1;padding:4px;text-align:center;font-size:10px;width:62px;">${f ? `<span style="background:${lvl[lv]};padding:1px 5px;border-radius:6px;font-weight:700;">Niv ${lv}</span><br>${evalPts(lv)} pt` : ''}</td>
+          <td style="border:1px solid #cbd5e1;padding:4px;text-align:center;font-size:10px;font-weight:800;width:78px;color:${L ? '#5b21b6' : '#075985'};">${L ? '🔒 Bloquée' : '🎲 Tirée au sort'}</td></tr>`;
+      }).join('');
+      return `<div style="${last ? '' : 'page-break-after:always;'}padding-bottom:6px;">
+        <h2 style="margin:0 0 2px;font-size:17px;">Fiche ${idx + 1} — ${data.s.map(evalEsc).join(', ')}</h2>
+        <p style="margin:0 0 8px;font-size:11px;color:#475569;">${evalEsc(data.d || '')} · Score total : <b>${teacherScore(data).toFixed(1)} pt</b></p>
+        <table style="border-collapse:collapse;width:100%;">${rows}</table></div>`;
+    }
+
+    function teacherExportPDF() {
+      if (!teacherScans.length) { alert('Aucune fiche scannée à exporter.'); return; }
+      const recap = teacherScans.map((s, i) => `<tr><td style="border:1px solid #cbd5e1;padding:5px;text-align:center;">${i + 1}</td>
+        <td style="border:1px solid #cbd5e1;padding:5px;">${s.data.s.map(evalEsc).join(', ')}</td>
+        <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;">${evalEsc(s.data.d || '')}</td>
+        <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;">${s.data.o.length}</td>
+        <td style="border:1px solid #cbd5e1;padding:5px;text-align:center;font-weight:900;">${teacherScore(s.data).toFixed(1)}</td></tr>`).join('');
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#fff;overflow:auto;';
+      wrap.innerHTML = `<div style="width:700px;margin:0 auto;padding:16px;font-family:Arial,sans-serif;color:#0f172a;background:#fff;">
+        <div style="page-break-after:always;">
+          <h1 style="margin:0;font-size:20px;">AcroSport — Évaluations scannées</h1>
+          <p style="margin:4px 0 12px;font-size:11px;color:#475569;">Collège Camille Claudel — export du ${new Date().toLocaleDateString('fr-FR')} — ${teacherScans.length} fiche(s)</p>
+          <table style="border-collapse:collapse;width:100%;font-size:12px;">
+            <tr style="background:#e2e8f0;"><th style="border:1px solid #cbd5e1;padding:5px;">N°</th><th style="border:1px solid #cbd5e1;padding:5px;">Groupe</th><th style="border:1px solid #cbd5e1;padding:5px;">Date</th><th style="border:1px solid #cbd5e1;padding:5px;">Figures</th><th style="border:1px solid #cbd5e1;padding:5px;">Score</th></tr>${recap}</table>
+        </div>${teacherScans.map((s, i) => teacherFicheHTML(s.data, i, i === teacherScans.length - 1)).join('')}</div>`;
+      document.body.appendChild(wrap);
+      const opt = { margin: 0.3, filename: 'acrosport_evaluations_scannees.pdf', image: { type: 'jpeg', quality: 0.95 },
+        html2canvas: { scale: 1.6, useCORS: true, scrollY: 0 }, jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['css', 'legacy'] } };
+      const done = () => wrap.remove();
+      try { html2pdf().set(opt).from(wrap.firstElementChild).save().then(done).catch(done); }
+      catch (e) { done(); alert("L'export PDF nécessite une connexion la première fois (bibliothèque html2pdf)."); }
+    }
+
+    function teacherExportCSV() {
+      if (!teacherScans.length) { alert('Aucune fiche scannée à exporter.'); return; }
+      const q = v => '"' + String(v).replace(/"/g, '""') + '"';
+      const lines = [['Groupe', 'Date', 'Score total', 'Position', 'Figure', 'Niveau', 'Points', 'Type', 'Rôles'].map(q).join(';')];
+      teacherScans.forEach(s => {
+        const total = teacherScore(s.data).toFixed(1).replace('.', ',');
+        s.data.o.forEach((e, i) => {
+          const f = teacherFig(e[0]), lv = f ? f.level : '';
+          const roles = s.data.s.map((n, k) => n + ' : ' + (EVAL_CODE_ROLE[(e[2] || '')[k]] || '—')).join(' | ');
+          lines.push([s.data.s.join(', '), s.data.d || '', total, i + 1, f ? f.name : e[0], lv, lv ? String(evalPts(lv)).replace('.', ',') : '', e[1] === 'L' ? 'Bloquée' : 'Tirée au sort', roles].map(q).join(';'));
+        });
+      });
+      const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'acrosport_evaluations_scannees.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
   </script>
 </body>
