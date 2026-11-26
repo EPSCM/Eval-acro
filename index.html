@@ -4,6 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AcroSport EPS - Collège Camille Claudel</title>
+  <!-- PWA : installation et fonctionnement hors ligne -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#4f46e5">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -587,7 +594,8 @@
         category: 'Dessin Élève',
         level: level,
         name: nameInput,
-        img: canvas.toDataURL()
+        img: canvas.toDataURL(),
+        thumb: customThumb(canvas)
       };
 
       FIGURES_DB.push(newFig);
@@ -1070,16 +1078,45 @@
       return out;
     }
 
+    // Miniature 1 bit (56x36) d'un dessin : toute trace dans un bloc => pixel noir
+    const THUMB_W = 56, THUMB_H = 36;
+    function customThumb(cv) {
+      try {
+        const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+        const bytes = new Uint8Array(Math.ceil(THUMB_W * THUMB_H / 8));
+        for (let ty = 0; ty < THUMB_H; ty++) for (let tx = 0; tx < THUMB_W; tx++) {
+          const x0 = Math.floor(tx * cv.width / THUMB_W), x1 = Math.max(x0 + 1, Math.floor((tx + 1) * cv.width / THUMB_W));
+          const y0 = Math.floor(ty * cv.height / THUMB_H), y1 = Math.max(y0 + 1, Math.floor((ty + 1) * cv.height / THUMB_H));
+          let ink = false;
+          for (let y = y0; y < y1 && !ink; y++) for (let x = x0; x < x1; x++) if (d[(y * cv.width + x) * 4 + 3] > 30) { ink = true; break; }
+          if (ink) { const b = ty * THUMB_W + tx; bytes[b >> 3] |= 1 << (b & 7); }
+        }
+        let s = ''; bytes.forEach(v => s += String.fromCharCode(v));
+        return btoa(s);
+      } catch (e) { return ''; }
+    }
+
     function evalPayload() {
       const ord = evalOrdered();
       const total = ord.reduce((s, [it]) => s + evalPts(it.fig.level), 0);
-      return JSON.stringify({
+      const build = withThumb => JSON.stringify({
         v: 1,
         d: new Date().toISOString().slice(0, 10),
         s: students.filter(n => n && n.trim()),
         t: Math.round(total * 10) / 10,
-        o: ord.map(([it, t]) => [it.fig.id, t, students.map((_, i) => EVAL_ROLE_CODE[it.roles[i]] || 'A').join('')])
+        o: ord.map(([it, t]) => {
+          const e = [it.fig.id, t, students.map((_, i) => EVAL_ROLE_CODE[it.roles[i]] || 'A').join('')];
+          if (String(it.fig.id).startsWith('custom_')) {
+            const x = { n: String(it.fig.name).slice(0, 40), l: it.fig.level, f: it.fig.family };
+            if (withThumb && it.fig.thumb) x.t = it.fig.thumb;
+            e.push(x);
+          }
+          return e;
+        })
       });
+      let p = build(true);
+      if (new TextEncoder().encode(p).length > 2000) p = build(false); // QR trop dense : on garde nom + niveau, sans miniature
+      return p;
     }
 
     function evalQRDataURL() {
@@ -1104,7 +1141,12 @@
 
     function evalFillQR() {
       const img = document.getElementById('eval-qr-img');
-      if (img) img.src = evalQRDataURL();
+      if (img) {
+        img.src = evalQRDataURL();
+        const big = evalPayload().length > 900; // QR dense (figures dessinées) : affichage agrandi pour rester lisible
+        img.style.width = img.style.height = big ? '288px' : '160px';
+        img.style.maxWidth = '100%';
+      }
     }
 
     function evalExportPDF() {
@@ -1133,7 +1175,7 @@
           <div style="font-size:12px;"><b>Score total :</b> ${total.toFixed(1)} pt<br><br>
             <span style="display:inline-block;background:#ede9fe;border:1px solid #7c3aed;padding:1px 6px;border-radius:6px;font-size:10px;">🔒 Figure bloquée</span>
             <span style="display:inline-block;background:#e0f2fe;border:1px solid #0284c7;padding:1px 6px;border-radius:6px;font-size:10px;">🎲 Figure tirée au sort</span></div>
-          <div style="text-align:center;"><img src="${evalQRDataURL()}" style="width:150px;height:150px;"><br><span style="font-size:10px;color:#475569;">QR à présenter à l'enseignant</span></div>
+          <div style="text-align:center;page-break-inside:avoid;"><img src="${evalQRDataURL()}" style="width:${evalPayload().length > 900 ? 270 : 150}px;height:${evalPayload().length > 900 ? 270 : 150}px;"><br><span style="font-size:10px;color:#475569;">QR à présenter à l'enseignant</span></div>
         </div></div>`;
       document.body.appendChild(wrap);
       const opt = { margin: 0.3, filename: 'acrosport_evaluation.pdf', image: { type: 'jpeg', quality: 0.98 },
@@ -1256,7 +1298,7 @@
       const lvlCls = { 1: 'bg-emerald-100 text-emerald-800', 2: 'bg-amber-100 text-amber-800', 3: 'bg-rose-100 text-rose-800' };
       let total = 0;
       const rows = data.o.map((e, i) => {
-        const fig = (typeof FIGURES_DB !== 'undefined') && FIGURES_DB.find(f => f.id === e[0]);
+        const fig = teacherFig(e[0], e[3]);
         const L = e[1] === 'L';
         const lv = fig ? fig.level : 0;
         total += evalPts(lv);
@@ -1308,8 +1350,37 @@
       teacherSave();
       return true;
     }
-    function teacherFig(id) { return FIGURES_DB.find(f => f.id === id); }
-    function teacherScore(data) { return data.o.reduce((s, e) => { const f = teacherFig(e[0]); return s + (f ? evalPts(f.level) : 0); }, 0); }
+    const teacherCustomCache = {};
+    function teacherThumbURL(b64) {
+      try {
+        const bin = atob(b64), S = 4, c = document.createElement('canvas');
+        c.width = THUMB_W * S; c.height = THUMB_H * S;
+        const x = c.getContext('2d');
+        x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+        x.fillStyle = '#1e3a8a';
+        for (let ty = 0; ty < THUMB_H; ty++) for (let tx = 0; tx < THUMB_W; tx++) {
+          const b = ty * THUMB_W + tx;
+          if ((bin.charCodeAt(b >> 3) >> (b & 7)) & 1) x.fillRect(tx * S, ty * S, S, S);
+        }
+        return c.toDataURL();
+      } catch (e) { return ''; }
+    }
+    function teacherFig(id, extra) {
+      const f = FIGURES_DB.find(f => f.id === id);
+      if (f) return f;
+      if (extra && typeof extra === 'object') {
+        const key = id + '|' + (extra.t || '');
+        if (!teacherCustomCache[key]) {
+          const lv = [1, 2, 3].includes(extra.l) ? extra.l : 1;
+          teacherCustomCache[key] = { id: id, family: extra.f || '', category: 'Dessin Élève', level: lv,
+            name: (extra.n || 'Figure dessinée') + ' ✏️',
+            img: (extra.t && teacherThumbURL(extra.t)) || 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><text x="50" y="38" font-size="30" text-anchor="middle">✏️</text></svg>') };
+        }
+        return teacherCustomCache[key];
+      }
+      return null;
+    }
+    function teacherScore(data) { return data.o.reduce((s, e) => { const f = teacherFig(e[0], e[3]); return s + (f ? evalPts(f.level) : 0); }, 0); }
 
     function teacherRenderList() {
       const box = document.getElementById('teacher-list');
@@ -1341,7 +1412,7 @@
     function teacherFicheHTML(data, idx, last) {
       const lvl = { 1: '#d1fae5', 2: '#fef3c7', 3: '#ffe4e6' };
       const rows = data.o.map((e, i) => {
-        const f = teacherFig(e[0]), L = e[1] === 'L', lv = f ? f.level : 0;
+        const f = teacherFig(e[0], e[3]), L = e[1] === 'L', lv = f ? f.level : 0;
         const roles = data.s.map((n, k) => `${evalEsc(n)} : ${evalEsc(EVAL_CODE_ROLE[(e[2] || '')[k]] || '—')}`).join(' · ');
         return `<tr style="background:${L ? '#ede9fe' : '#e0f2fe'};">
           <td style="border:1px solid #cbd5e1;padding:4px;text-align:center;font-weight:900;font-size:16px;width:36px;">${i + 1}</td>
@@ -1388,7 +1459,7 @@
       teacherScans.forEach(s => {
         const total = teacherScore(s.data).toFixed(1).replace('.', ',');
         s.data.o.forEach((e, i) => {
-          const f = teacherFig(e[0]), lv = f ? f.level : '';
+          const f = teacherFig(e[0], e[3]), lv = f ? f.level : '';
           const roles = s.data.s.map((n, k) => n + ' : ' + (EVAL_CODE_ROLE[(e[2] || '')[k]] || '—')).join(' | ');
           lines.push([s.data.s.join(', '), s.data.d || '', total, i + 1, f ? f.name : e[0], lv, lv ? String(evalPts(lv)).replace('.', ',') : '', e[1] === 'L' ? 'Bloquée' : 'Tirée au sort', roles].map(q).join(';'));
         });
@@ -1398,6 +1469,12 @@
       a.href = URL.createObjectURL(blob); a.download = 'acrosport_evaluations_scannees.csv';
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+  </script>
+  <script>
+    // Enregistrement du service worker (nécessite https ou localhost)
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+      window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
     }
   </script>
 </body>

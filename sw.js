@@ -1,6 +1,6 @@
 /* AcroSport EPS — Service Worker (fonctionnement hors ligne)
    Changer VERSION à chaque mise à jour de l'application pour forcer le rafraîchissement du cache. */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'acrosport-' + VERSION;
 
 // Fichiers locaux indispensables
